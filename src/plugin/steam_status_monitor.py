@@ -154,7 +154,7 @@ class SteamStatusMonitorV3(
         self._load_bind_data()
         # --- 通知合并缓冲区：SessionService 将开始/结束通知写入此队列，由主轮询统一 flush ---
         self._pending_end_notifications = {}  # {group_id: [notification_dict, ...]}
-        # --- 游戏库新入库播报：独立服务 + 独立后台 task（默认 30 分钟一轮，不阻塞主轮询） ---
+        # --- 游戏库变化播报：独立服务 + 独立后台 task（默认 30 分钟一轮，不阻塞主轮询） ---
         self.owned_games = OwnedGamesService(self)
         self._owned_games_task = asyncio.create_task(self.owned_games.run_loop())
         # --- AstrBot Plugin Pages 管理后台 ---
@@ -480,7 +480,7 @@ class SteamStatusMonitorV3(
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("steam syncgames")
     async def steam_syncgames(self, event: AstrMessageEvent, param: str = ""):
-        '''手动同步本群玩家游戏库（默认仅更新基线；syncgames now 立即播报新增）'''
+        '''手动同步本群玩家游戏库（默认仅更新基线；syncgames now 播报新增和已确认移出）'''
         async for result in ops.syncgames(self, event, param):
             yield result
 

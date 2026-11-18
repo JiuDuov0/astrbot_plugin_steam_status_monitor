@@ -221,6 +221,17 @@ class OwnedGamesStoreTests(unittest.TestCase):
         self.assertEqual(pending[1]["items"], [{"appid": "570", "name": "Dota 2"}])
         self.assertEqual(pending[2]["appid"], "730")
 
+    def test_removed_candidates_and_pending_roundtrip(self):
+        store = OwnedGamesStore(self.data_dir)
+        store.players["s1"] = _state([1], missing={"2": 1}, pending=[
+            {"kind": "removed", "appid": "3", "groups": ["111"]},
+            {"kind": "removed_batch", "items": [{"appid": 4, "name": "Game"}]},
+        ])
+        store.flush()
+        state = OwnedGamesStore(self.data_dir).players["s1"]
+        self.assertEqual(state["missing"], {"2": 1})
+        self.assertEqual([item["kind"] for item in state["pending"]], ["removed", "removed_batch"])
+
     def test_owned_batch_deliveries_preserved(self):
         batch = {
             "kind": "owned_batch",

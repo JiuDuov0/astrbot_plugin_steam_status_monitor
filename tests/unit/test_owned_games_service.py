@@ -1,5 +1,7 @@
 """OwnedGamesService：基线、差分、隐私防护、抖动抑制、去重、补发与重启续播。"""
 import unittest
+import asyncio
+from unittest.mock import AsyncMock, patch
 
 from src.application.services.owned_games import OwnedGamesService
 from src.infrastructure.clients.steam import (
@@ -83,6 +85,23 @@ class OwnedGamesServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(state["baseline_at"], 0)
         self.assertEqual(summary["baselines"], 1)
         self.assertEqual(self.plugin.sent, [])
+
+    async def test_startup_waits_interval_before_second_sync(self):
+        sleeps = []
+
+        async def fake_sleep(seconds):
+            sleeps.append(seconds)
+            if len(sleeps) == 2:
+                raise asyncio.CancelledError
+
+        with patch("src.application.services.owned_games.asyncio.sleep", side_effect=fake_sleep), \
+             patch.object(self.service, "sync_all", new=AsyncMock()) as sync, \
+             patch.object(self.service, "retry_pending", new=AsyncMock()) as retry:
+            with self.assertRaises(asyncio.CancelledError):
+                await self.service.run_loop()
+        self.assertEqual(sleeps, [60, 1800])
+        self.assertEqual(sync.await_count, 1)
+        self.assertEqual(retry.await_count, 1)
 
     async def test_new_game_detected_and_announced(self):
         self.plugin.fetch_queue = [games(1, 2), games(1, 2, 3)]
@@ -216,8 +235,130 @@ class OwnedGamesServiceTests(unittest.IsolatedAsyncioTestCase):
 
         result = await self.service.sync_group_with_report("111")
 
-        self.assertEqual(result, {"players": 2, "baselines": 2, "added": 0, "failed": 0})
+        self.assertEqual(result, {"players": 2, "baselines": 2, "added": 0, "removed": 0, "failed": 0})
         self.assertEqual(self.plugin.sent, [])
+
+    async def test_removed_requires_two_successful_observations_and_survives_restart(self):
+        self.plugin.config["enable_owned_games_removed_notify"] = True
+        self.plugin.fetch_queue = [games(1, 2), games(1)]
+        await self.service.sync_all(baseline_only=True)
+        await self.service.sync_all()
+        self.assertEqual(self.service.players[SID]["missing"], {"2": 1})
+        self.assertEqual(self.plugin.sent, [])
+        self.service.store.flush()
+
+        self.service = OwnedGamesService(self.plugin)
+        self.plugin.fetch_queue = [OwnedGamesInvisible("不可见"), games(1)]
+        await self.service.sync_player(SID, ["111"])
+        self.assertEqual(self.service.players[SID]["missing"], {"2": 1})
+        result = await self.service.sync_player(SID, ["111"])
+        self.assertEqual(result["removed"], 1)
+        self.assertEqual(self._sent_notifications()[0]["type"], "removed")
+        self.assertEqual(self._sent_notifications()[0]["gameid"], "2")
+        self.assertEqual(self.service.players[SID]["missing"], {})
+
+    async def test_reappearance_cancels_missing_without_added_or_removed(self):
+        self.plugin.config["enable_owned_games_removed_notify"] = True
+        self.plugin.fetch_queue = [games(1, 2), games(1), games(1, 2), games(1, 2)]
+        await self.service.sync_all(baseline_only=True)
+        for _ in range(3):
+            await self.service.sync_all()
+        self.assertEqual(self.plugin.sent, [])
+        self.assertEqual(self.service.players[SID]["missing"], {})
+
+    async def test_removed_independent_switch_filter_and_multigroup(self):
+        self.plugin.config.update({
+            "enable_owned_games_notify": False,
+            "enable_owned_games_removed_notify": True,
+            "owned_games_removed_confirmations": 1,
+            "owned_games_ignore_appids": "3",
+        })
+        self.plugin.group_steam_ids = {"111": [SID], "222": [SID]}
+        self.plugin.running_groups = {"111", "222"}
+        self.plugin.fetch_queue = [games(1, 2, 3), games(1, 4)]
+        await self.service.sync_all(baseline_only=True)
+        summary = await self.service.sync_all()
+        self.assertEqual((summary["added"], summary["removed"]), (0, 1))
+        self.assertEqual({group for group, _ in self.plugin.sent}, {"111", "222"})
+        self.assertEqual({n["type"] for n in self._sent_notifications()}, {"removed"})
+        self.assertEqual(self.service.players[SID]["ids"], [1, 4])
+
+    async def test_disabled_removal_does_not_accumulate_candidates(self):
+        self.plugin.fetch_queue = [games(1, 2), games(1), games(1)]
+        await self.service.sync_all(baseline_only=True)
+        await self.service.sync_all()
+        self.plugin.config["enable_owned_games_removed_notify"] = True
+        await self.service.sync_all()
+        self.assertEqual(self.service.players[SID]["missing"], {})
+        self.assertEqual(self.plugin.sent, [])
+
+    async def test_manual_baseline_clears_candidates(self):
+        self.plugin.config["enable_owned_games_removed_notify"] = True
+        self.plugin.fetch_queue = [games(1, 2), games(1), games(1), games(1)]
+        await self.service.sync_all(baseline_only=True)
+        await self.service.sync_all()
+        await self.service.sync_group_with_report("111")
+        await self.service.sync_all()
+        self.assertEqual(self.plugin.sent, [])
+        self.assertEqual(self.service.players[SID]["missing"], {})
+
+    async def test_removed_compact_retry_persists_with_independent_switch(self):
+        self.plugin.config.update({
+            "enable_owned_games_notify": False,
+            "enable_owned_games_removed_notify": True,
+            "owned_games_removed_confirmations": 1,
+            "owned_games_notify_style": "compact",
+        })
+        self.plugin.fetch_queue = [games(1, 2, 3), games(1)]
+        await self.service.sync_all(baseline_only=True)
+        self.plugin.send_should_fail = True
+        await self.service.sync_all()
+        self.assertEqual(self._sent_notifications()[0]["type"], "removed_batch")
+        self.service.store.flush()
+        self.service = OwnedGamesService(self.plugin)
+        self.assertEqual(self.service.players[SID]["pending"][0]["kind"], "removed_batch")
+        self.plugin.send_should_fail = False
+        self.assertEqual(await self.service.retry_pending(), 1)
+        self.assertEqual(self.service.players[SID]["pending"], [])
+
+    async def test_added_and_removed_can_be_announced_in_one_round(self):
+        self.plugin.config.update({
+            "enable_owned_games_removed_notify": True,
+            "owned_games_removed_confirmations": 1,
+        })
+        self.plugin.fetch_queue = [games(1, 2), games(1, 3)]
+        await self.service.sync_all(baseline_only=True)
+        result = await self.service.sync_all()
+        self.assertEqual((result["added"], result["removed"]), (1, 1))
+        self.assertEqual({n["type"] for n in self._sent_notifications()}, {"owned", "removed"})
+        self.assertEqual([entry["appid"] for entry in self.service.players[SID]["recent"]], ["3"])
+
+    async def test_removed_pending_waits_for_its_switch_after_restart(self):
+        self.plugin.config.update({
+            "enable_owned_games_removed_notify": True,
+            "owned_games_removed_confirmations": 1,
+        })
+        self.plugin.fetch_queue = [games(1, 2), games(1)]
+        await self.service.sync_all(baseline_only=True)
+        self.plugin.send_should_fail = True
+        await self.service.sync_all()
+        self.service.store.flush()
+        self.service = OwnedGamesService(self.plugin)
+        self.assertEqual(self.service.players[SID]["pending"][0]["kind"], "removed")
+        self.plugin.config["enable_owned_games_removed_notify"] = False
+        self.plugin.send_should_fail = False
+        self.assertEqual(await self.service.retry_pending(), 0)
+        self.assertEqual(len(self.service.players[SID]["pending"]), 1)
+        self.plugin.config["enable_owned_games_removed_notify"] = True
+        self.assertEqual(await self.service.retry_pending(), 1)
+        self.assertEqual(self.service.players[SID]["pending"], [])
+
+    async def test_manual_announce_obeys_confirmation_count(self):
+        self.plugin.config["enable_owned_games_removed_notify"] = True
+        self.plugin.fetch_queue = [games(1, 2), games(1), games(1)]
+        await self.service.sync_all(baseline_only=True)
+        self.assertEqual((await self.service.sync_group_with_report("111", announce=True))["removed"], 0)
+        self.assertEqual((await self.service.sync_group_with_report("111", announce=True))["removed"], 1)
 
     async def test_budget_available_resets_on_new_day(self):
         self.service._day_key = "old-day"

@@ -16,6 +16,30 @@ ITEMS = [{"appid": str(570 + index), "name": f"游戏{index}"} for index in rang
 
 
 class BatchImageGeometryTests(unittest.TestCase):
+    def test_removed_and_owned_labels(self):
+        original = ImageDraw.ImageDraw.text
+        for removed, action, time_label, empty_label in (
+            (False, "新入库", "入库时间", "暂无新入库游戏"),
+            (True, "移出游戏库", "移出检测时间", "暂无移出游戏"),
+        ):
+            with self.subTest(removed=removed):
+                texts = []
+
+                def record(draw, xy, text, *args, **kwargs):
+                    texts.append(text)
+                    return original(draw, xy, text, *args, **kwargs)
+
+                with patch.object(ImageDraw.ImageDraw, "text", record):
+                    image = render_owned_games_batch_image(
+                        "玩家", [], added_count=2, owned_count=3,
+                        added_at=1760000000, removed=removed,
+                    )
+                self.assertEqual(BATCH_WIDTH, image.width)
+                self.assertIn(f"{action} 2 款  ·  游戏库 3 款", texts)
+                self.assertIn(empty_label, texts)
+                self.assertTrue(any(text.startswith(time_label + " ") for text in texts))
+                self.assertFalse(any("退款" in text for text in texts))
+
     def test_width_is_always_820(self):
         for count in (0, 1, 5, 8):
             items = ITEMS[:count]
@@ -83,6 +107,21 @@ class BatchImageGeometryTests(unittest.TestCase):
 
 
 class BatchWrapperTests(unittest.IsolatedAsyncioTestCase):
+    async def test_wrapper_passes_removed_to_image(self):
+        with patch("src.presentation.renderers.owned_games_batch.get_avatar_path", new=AsyncMock(return_value=None)), \
+             patch("src.presentation.renderers.owned_games_batch._resolve_frame", new=AsyncMock(return_value=None)), \
+             patch("src.presentation.renderers.owned_games_batch._resolve_cover", new=AsyncMock(return_value=None)), \
+             patch("src.presentation.renderers.owned_games_batch.render_owned_games_batch_image",
+                   return_value=Image.new("RGB", (1, 1))) as renderer:
+            data = await render_owned_games_batch(
+                ".", "s", "p", None, items=ITEMS[:1], page=2, page_size=5,
+                added_count=3, added_at=123, removed=True,
+            )
+        self.assertTrue(data.startswith(b"\x89PNG"))
+        self.assertTrue(renderer.call_args.kwargs["removed"])
+        self.assertEqual(123, renderer.call_args.kwargs["added_at"])
+        self.assertEqual(6, renderer.call_args.kwargs["start_index"])
+
     async def test_cover_exception_still_returns_png(self):
         with patch(
             "src.presentation.renderers.owned_games_batch.get_horizontal_cover_path",

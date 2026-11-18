@@ -1,4 +1,4 @@
-"""『新入库』播报富卡（方案 A：Steam 深蓝详情风）。
+"""游戏库变动播报富卡（方案 A：Steam 深蓝详情风）。
 
 元素：玩家头像 + 头像框 + 名称 + 游戏库总数 + 新入库游戏标题 + 商店描述 + 双语言评价。
 商店数据（card_data）可选，缺失时自动降级为精简版；封面三级回退：
@@ -95,6 +95,7 @@ def render_owned_game_image(
     owned_count=0,
     added_at=None,
     version=None,
+    removed=False,
 ):
     """同步绘制（纯内存，无网络）；失败降级由调用方保证传入 None。"""
     card_data = card_data or {}
@@ -227,7 +228,8 @@ def render_owned_game_image(
     draw.text((LEFT_X + 10, badge_top + 5), badge_text, font=font_badge, fill=BADGE_TEXT_COLOR + (255,))
 
     draw.line((LEFT_X, divider_y, LEFT_X + LEFT_W, divider_y), fill=STEAM_BORDER + (255,), width=1)
-    draw.text((LEFT_X, divider_y + 12), "新入库", font=font_new, fill=STEAM_BLUE + (255,))
+    draw.text((LEFT_X, divider_y + 12), "移出游戏库" if removed else "新入库",
+              font=font_new, fill=STEAM_BLUE + (255,))
 
     text_y = title_top
     for line in title_lines:
@@ -304,8 +306,9 @@ def render_owned_game_image(
         line = f"开发商：{developer or '未知'}    发行商：{publisher or '未知'}"
         draw.text((RIGHT_X, y), line[:64], font=font_label, fill=STEAM_MUTED + (255,))
 
-    # ---------------- 底部：入库时间 + 版本号水印 ----------------
-    added_text = f"入库时间 {_format_ts(added_at)}" if added_at else ""
+    # ---------------- 底部：变动时间 + 版本号水印 ----------------
+    time_label = "移出检测时间" if removed else "入库时间"
+    added_text = f"{time_label} {_format_ts(added_at)}" if added_at else ""
     if added_text:
         draw.text((LEFT_X, card_height - 32), added_text, font=font_mini, fill=STEAM_MUTED + (255,))
     if version:
@@ -335,6 +338,7 @@ async def render_owned_game(
     steam_api_base=None,
     proxy=None,
     version=None,
+    removed=False,
 ):
     """异步入口：并发取头像/头像框/封面后绘制，返回 PNG bytes。"""
 
@@ -389,6 +393,7 @@ async def render_owned_game(
         owned_count=owned_count,
         added_at=added_at,
         version=version,
+        removed=removed,
     )
     output = io.BytesIO()
     image.save(output, format="PNG", optimize=True)

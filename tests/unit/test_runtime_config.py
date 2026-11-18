@@ -98,3 +98,13 @@ def test_apply_hot_update_owned_compact_non_int_rejected():
     assert ok is False
     assert "类型错误" in msg
     assert "owned_games_compact_max_pages" not in plugin.config
+
+
+def test_apply_hot_update_removed_settings():
+    plugin = SimpleNamespace(config={"steam_api_key": "K"})
+    ok, _ = apply_hot_update(plugin, "enable_owned_games_removed_notify", "true")
+    assert ok and plugin.config["enable_owned_games_removed_notify"] is True
+    ok, _ = apply_hot_update(plugin, "owned_games_removed_confirmations", "3")
+    assert ok and plugin.config["owned_games_removed_confirmations"] == 3
+    ok, _ = apply_hot_update(plugin, "owned_games_removed_confirmations", "0")
+    assert not ok and plugin.config["owned_games_removed_confirmations"] == 3

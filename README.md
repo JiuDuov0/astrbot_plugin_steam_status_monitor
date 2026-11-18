@@ -30,6 +30,7 @@
 - **权限配置同步**：内置管理页的“指令权限”直接读写 AstrBot 框架配置，并同步当前运行时权限
 - **命令层分层**：`/steam` 指令仍由 AstrBot 注册；名单、启停、价格、排行规则在应用服务，命令文件只做解析和回文。对外指令名、权限和数据目录不变
 - **游戏库新入库播报**（默认关闭）：独立后台任务默认每 30 分钟检测被监控玩家 Steam 库新增游戏，播报「新入库」卡片（含玩家头像、头像框、名称、游戏库总数、商店描述与评价）；首轮只建基线不播报，支持抖动抑制、失败补发与每日 API 预算保护
+- **游戏库移出播报**（默认关闭）：独立开关，连续成功同步确认游戏不在库中后播报，复用入库播报的样式、过滤及补发设置；不能判断移出原因。
 - **游戏库查询**：`/steam syncgames [now]` 手动同步本群游戏库；`/steam mygames [关键词]` 与群内 AI 助手（`steam_owned_games` 工具）查询本人绑定游戏库（仅限本人）
 
 ## 默认轮询间隔说明（智能轮询模式）
@@ -83,18 +84,22 @@
 | `font_pack_url` | 自定义字体包 URL（须 https，仍按清单校验） | 空 |
 | `font_download_timeout_sec` | 字体包下载超时（秒） | 600 |
 | `enable_owned_games_notify` | 游戏库新入库播报开关（首次同步只建基线不播报） | false |
+| `enable_owned_games_removed_notify` | 游戏库移出播报开关，独立于入库播报 | false |
+| `owned_games_removed_confirmations` | 连续成功同步未出现的确认次数（1-10）；查询失败不计数，重新出现则取消 | 2 |
 | `owned_games_poll_interval` | 游戏库轮询间隔（秒，最小 600） | 1800 |
 | `owned_games_include_free` | 游戏库是否包含玩过的免费游戏 | true |
 | `owned_games_max_per_notify` | 单轮最多渲染卡片数（1-20，超出仅文本列出，仅详细模式生效） | 5 |
-| `owned_games_notify_style` | 新入库播报样式：`auto` 按数量自动选 / `detailed` 逐款富卡 / `compact` 合并清单图 | auto |
+| `owned_games_notify_style` | 入库和移出共用样式：`auto` 按各自数量自动选 / `detailed` 逐款富卡 / `compact` 合并清单图 | auto |
 | `owned_games_auto_compact_threshold` | auto 模式下改用合并图的款数阈值（1-20） | 3 |
 | `owned_games_compact_page_size` | 简洁模式每页游戏数（1-20，超出自动分页） | 8 |
 | `owned_games_compact_max_pages` | 简洁模式单轮最多页数（1-10，超出本轮不播报但记入最近入库） | 3 |
 | `owned_games_compact_cover_concurrency` | 简洁模式封面下载并发（1-8） | 4 |
 | `owned_games_daily_budget` | 游戏库每日 API 预算（按凌晨 4 点分界） | 3000 |
-| `owned_games_ignore_appids` | 忽略的 AppID（逗号分隔，入库不播报） | 空 |
+| `owned_games_ignore_appids` | 忽略的 AppID（逗号分隔，入库和移出均不播报） | 空 |
 | `owned_games_grace_days` | 抖动抑制窗口（天，免费周末等临时入库） | 7 |
 
+> 移出确认次数包括首次发现缺失的同步；默认需两次成功同步，通常延迟一个游戏库轮询周期。接口失败不计数，游戏重新出现则取消。修改免费游戏包含设置也可能改变快照范围；确认只能降低误报，不能证明退款或删除原因。
+>
 > 上线/下线推送默认关闭（opt-in）。离线通知需连续 180 秒确认，窗口内重新上线不推送；上线检测受轮询间隔影响，通常有 3–30 分钟延迟。同一玩家多群监控时，待定按 SteamID 全局合并，不会重复计时或重复推送。
 >
 > 带「修改后重启AstrBot生效」标注的配置项需重启后生效。
@@ -203,7 +208,7 @@ AstrBot 只扫描 `Star` 子类上的命令装饰器，注册桩必须留在插�
 - `/steam push_group [SteamID]` 添加id到联动推送的副群（轮询一次通知多个群聊）
 - `/steam delpush_group [SteamID]` 删除id联动推送的副群
 - `/steam openbox [SteamID/好友码/链接]` 查看指定SteamID的全部详细信息
-- `/steam syncgames [now]` 手动同步本群玩家游戏库（默认仅更新基线不播报；`now` 立即播报本轮新增）
+- `/steam syncgames [now]` 手动同步本群玩家游戏库（默认仅更新基线不播报；`now` 按开关播报本轮新增及已确认移出，移出仍需满足确认次数）
 - `/steam mygames [关键词]` 查询本人绑定的游戏库（数量 / 最近入库 / 关键词检索，仅限本人）
 - `/steamwho @用户` / `/在干嘛 @用户`  即时查询 @绑定玩家的 Steam 状态
 - `/steam rank [天数]` 查看本群游戏时长排行榜（默认今日，可指定天数）

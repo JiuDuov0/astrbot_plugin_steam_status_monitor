@@ -1,4 +1,4 @@
-"""『新入库』合并清单卡（compact 样式）：一页多款，逐行缩略图 + 游戏名。
+"""游戏库变动合并清单卡（compact 样式）：一页多款，逐行缩略图 + 游戏名。
 
 与 owned_game.py 的单款富卡互补：
 - 单页最多 items 行，行高固定，卡片高度只随行数变化（与游戏名长度无关）；
@@ -89,6 +89,7 @@ def render_owned_games_batch_image(
     covers=None,
     start_index=1,
     version=None,
+    removed=False,
 ):
     """同步绘制（纯内存，无网络无 IO）。
 
@@ -132,7 +133,8 @@ def render_owned_games_batch_image(
     name_lines = _wrap(
         measure, str(player_name or "Steam 玩家"), font_name, name_max_w, max_lines=1,
     )
-    subtitle = f"新入库 {added_value} 款  ·  游戏库 {owned_value} 款"
+    action = "移出游戏库" if removed else "新入库"
+    subtitle = f"{action} {added_value} 款  ·  游戏库 {owned_value} 款"
 
     # ---------------- 行区几何 ----------------
     rows_top = PAD + HEADER_H + 16
@@ -239,15 +241,17 @@ def render_owned_games_batch_image(
 
     if not entries:
         draw.text(
-            (BATCH_WIDTH / 2, rows_top + ROW_H / 2), "暂无新入库游戏",
+            (BATCH_WIDTH / 2, rows_top + ROW_H / 2),
+            "暂无移出游戏" if removed else "暂无新入库游戏",
             font=font_meta, fill=STEAM_MUTED + (255,), anchor="mm",
         )
 
-    # ---------------- 底部：入库时间 / 页码 / 版本水印 ----------------
+    # ---------------- 底部：变动时间 / 页码 / 版本水印 ----------------
     added_text = _format_ts(added_at) if added_at else ""
     footer_text_y = footer_top + (FOOTER_H - 14) // 2 - 2
     if added_text:
-        draw.text((PAD, footer_text_y), f"入库时间 {added_text}",
+        time_label = "移出检测时间" if removed else "入库时间"
+        draw.text((PAD, footer_text_y), f"{time_label} {added_text}",
                   font=font_small, fill=STEAM_MUTED + (255,))
 
     watermark_x = BATCH_WIDTH - 14
@@ -334,6 +338,7 @@ async def render_owned_games_batch(
     version=None,
     page_size=0,
     cover_concurrency=DEFAULT_COVER_CONCURRENCY,
+    removed=False,
 ):
     """异步入口：并发取头像/头像框/本页封面后绘制，返回 PNG bytes。
 
@@ -407,6 +412,7 @@ async def render_owned_games_batch(
         covers=covers,
         start_index=start_index,
         version=version,
+        removed=removed,
     )
     output = io.BytesIO()
     image.save(output, format="PNG", optimize=True)

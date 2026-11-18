@@ -79,8 +79,8 @@ class NotificationTrackingMixin:
             if noti["type"] in ("online", "offline"):
                 # 上线/下线为纯文本推送，不渲染图片
                 return None
-            if noti["type"] == "owned_batch":
-                # 简洁模式：本轮新增合并成清单图；不取卡片详情，封面命中缓存即零网络
+            if noti["type"] in ("owned_batch", "removed_batch"):
+                # 简洁模式：本轮变动合并成清单图；不取卡片详情，封面命中缓存即零网络
                 img_bytes = await render_owned_games_batch(
                     self.data_dir, noti["sid"], noti["name"], noti.get("avatar_url"),
                     items=noti.get("items") or [],
@@ -95,10 +95,11 @@ class NotificationTrackingMixin:
                     steam_api_base=self.STEAM_API_BASE, proxy=self.proxy,
                     version=self._plugin_version,
                     cover_concurrency=self._compact_cover_concurrency(),
+                    **({"removed": True} if noti["type"] == "removed_batch" else {}),
                 )
-            elif noti["type"] == "owned":
+            elif noti["type"] in ("owned", "removed"):
                 if not noti.get("render", True):
-                    return None  # 超出单轮卡片上限的新增：仅文本，不渲染图片
+                    return None  # 超出单轮卡片上限：仅文本，不渲染图片
                 img_bytes = await render_owned_game(
                     self.data_dir, noti["sid"], noti["name"], noti.get("avatar_url"),
                     noti.get("gameid"), noti.get("game") or "未知游戏",
@@ -109,6 +110,7 @@ class NotificationTrackingMixin:
                     sgdb_api_base=self.SGDB_API_BASE, steam_store_base=self.STEAM_STORE_BASE,
                     steam_api_base=self.STEAM_API_BASE, proxy=self.proxy,
                     version=self._plugin_version,
+                    **({"removed": True} if noti["type"] == "removed" else {}),
                 )
             elif noti["type"] == "start":
                 status = noti.get("status", {})
@@ -150,10 +152,10 @@ class NotificationTrackingMixin:
     def _is_intentionally_unrendered(notification):
         """该通知是否「本就不该出图」（区别于「渲染失败」）。
 
-        目前只有游戏库新入库族带 render 开关：详细模式超出单轮卡片上限的条目
+        游戏库变动通知带 render 开关：详细模式超出单轮卡片上限的条目
         会被显式标记 render=False，此时没有图片是设计行为，不是故障。
         """
-        if notification.get("type") not in ("owned", "owned_batch"):
+        if notification.get("type") not in ("owned", "owned_batch", "removed", "removed_batch"):
             return False
         return not notification.get("render", True)
 
@@ -162,9 +164,9 @@ class NotificationTrackingMixin:
         identifier = notification.get("gameid")
         if notification.get("type") == "end":
             event_time = notification.get("quit_time")
-        elif notification.get("type") == "owned":
+        elif notification.get("type") in ("owned", "removed"):
             event_time = notification.get("added_at")
-        elif notification.get("type") == "owned_batch":
+        elif notification.get("type") in ("owned_batch", "removed_batch"):
             # 合并清单没有单一 gameid：用页码占位，避免同批多页塌缩成同一个去重键。
             # 元组形状保持 5 位不变，既有去重语义与测试断言不受影响。
             event_time = notification.get("added_at")
@@ -250,17 +252,19 @@ class NotificationTrackingMixin:
                 before = len(msg_chain)
                 if notification["type"] == "start":
                     line = f"🟢【{notification['name']}】开始游玩 {notification['game']}\n"
-                elif notification["type"] == "owned":
+                elif notification["type"] in ("owned", "removed"):
+                    action = "移出游戏库" if notification["type"] == "removed" else "新入库"
                     line = (
-                        f"📚【{notification['name']}】新入库 {notification['game']}"
+                        f"📚【{notification['name']}】{action} {notification['game']}"
                         f"（当前共 {notification.get('owned_count') or 0} 款）\n"
                     )
-                elif notification["type"] == "owned_batch":
+                elif notification["type"] in ("owned_batch", "removed_batch"):
                     count = notification.get("added_count") or len(notification.get("items") or [])
                     page = notification.get("page") or 1
                     pages = notification.get("pages") or 1
+                    action = "移出游戏库" if notification["type"] == "removed_batch" else "新入库"
                     line = (
-                        f"📚【{notification['name']}】新入库 {count} 款"
+                        f"📚【{notification['name']}】{action} {count} 款"
                         f"（当前共 {notification.get('owned_count') or 0} 款）\n"
                     )
                     if page == 1:
@@ -303,7 +307,7 @@ class NotificationTrackingMixin:
 
         async def send_batches(session, matched):
             failed = []
-            managed = any(n["type"] not in ("owned", "owned_batch") for n in matched)
+            managed = any(n["type"] not in ("owned", "owned_batch", "removed", "removed_batch") for n in matched)
             try:
                 if managed and time.monotonic() < cooldowns.get(session, (0, 0))[1]:
                     return [dict(n, _target_session=session) for n in matched]

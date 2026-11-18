@@ -94,6 +94,8 @@ class SettingsUpdateValidationTests(unittest.IsolatedAsyncioTestCase):
             ("owned_games_compact_page_size", 21),
             ("owned_games_compact_max_pages", 11),
             ("owned_games_compact_cover_concurrency", 9),
+            ("owned_games_removed_confirmations", 0),
+            ("owned_games_removed_confirmations", 11),
         ]
         for key, value in cases:
             (status, _body), plugin = await self._call({key: value})
@@ -159,6 +161,10 @@ class SettingsFrontendWiringTests(unittest.TestCase):
 
     def test_auto_threshold_key_is_exposed(self):
         self.assertIn('"owned_games_auto_compact_threshold"', self.js)
+
+    def test_removed_settings_are_exposed(self):
+        self.assertIn('"enable_owned_games_removed_notify"', self.js)
+        self.assertIn('"owned_games_removed_confirmations"', self.js)
 
     def test_int_keys_are_collected_as_numbers(self):
         marker = "const IK=["

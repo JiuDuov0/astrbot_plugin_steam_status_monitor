@@ -117,6 +117,8 @@ def apply_runtime_config(plugin, config=None):
 
 OWNED_GAMES_HOT_KEYS = {
     "enable_owned_games_notify",
+    "enable_owned_games_removed_notify",
+    "owned_games_removed_confirmations",
     "owned_games_include_free",
     "owned_games_poll_interval",
     "owned_games_max_per_notify",
@@ -130,8 +132,9 @@ OWNED_GAMES_HOT_KEYS = {
     "owned_games_compact_max_pages",
     "owned_games_compact_cover_concurrency",
 }
-_OWNED_BOOL_KEYS = {"enable_owned_games_notify", "owned_games_include_free"}
+_OWNED_BOOL_KEYS = {"enable_owned_games_notify", "enable_owned_games_removed_notify", "owned_games_include_free"}
 _OWNED_INT_KEYS = {
+    "owned_games_removed_confirmations",
     "owned_games_poll_interval",
     "owned_games_max_per_notify",
     "owned_games_daily_budget",
@@ -159,6 +162,8 @@ def apply_hot_update(plugin, key, value):
                 value = int(str(value).strip())
             except Exception:
                 return False, "类型错误，应为整数"
+            if key == "owned_games_removed_confirmations" and not 1 <= value <= 10:
+                return False, "移出播报确认次数应为 1-10"
         else:
             value = str(value).strip()
     elif key == "smart_poll_intervals":

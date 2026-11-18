@@ -42,6 +42,25 @@ class RenderOwnedGameImageTests(unittest.TestCase):
         )
         self._assert_png(image)
 
+    def test_removed_and_owned_labels(self):
+        original = ImageDraw.ImageDraw.text
+        for removed, action, time_label in (
+            (False, "新入库", "入库时间"), (True, "移出游戏库", "移出检测时间"),
+        ):
+            with self.subTest(removed=removed):
+                texts = []
+
+                def record(draw, xy, text, *args, **kwargs):
+                    texts.append(text)
+                    return original(draw, xy, text, *args, **kwargs)
+
+                with patch.object(ImageDraw.ImageDraw, "text", record):
+                    image = render_owned_game_image("玩家", "游戏", added_at=1760000000, removed=removed)
+                self._assert_png(image)
+                self.assertIn(action, texts)
+                self.assertTrue(any(text.startswith(time_label + " ") for text in texts))
+                self.assertFalse(any("退款" in text for text in texts))
+
     def test_card_degrades_without_store_data(self):
         image = render_owned_game_image("玩家", "未知游戏", card_data=None, owned_count=0)
         self._assert_png(image)
@@ -56,6 +75,19 @@ class RenderOwnedGameImageTests(unittest.TestCase):
 
 
 class RenderOwnedGameWrapperTests(unittest.IsolatedAsyncioTestCase):
+    async def test_wrapper_passes_removed_to_image(self):
+        with patch("src.presentation.renderers.owned_game.get_avatar_path", new=AsyncMock(return_value=None)), \
+             patch("src.presentation.renderers.owned_game.get_avatar_frame_path", new=AsyncMock(return_value=None)), \
+             patch("src.presentation.renderers.owned_game.get_avatar_frame_url", new=AsyncMock(return_value=None)), \
+             patch("src.presentation.renderers.owned_game.get_horizontal_cover_path", new=AsyncMock(return_value=None)), \
+             patch("src.presentation.renderers.owned_game.get_cover_path", new=AsyncMock(return_value=None)), \
+             patch("src.presentation.renderers.owned_game.render_owned_game_image",
+                   return_value=Image.new("RGB", (1, 1))) as renderer:
+            data = await render_owned_game(".", "s", "p", None, 570, "g", added_at=123, removed=True)
+        self.assertTrue(data.startswith(b"\x89PNG"))
+        self.assertTrue(renderer.call_args.kwargs["removed"])
+        self.assertEqual(123, renderer.call_args.kwargs["added_at"])
+
     async def test_wrapper_offline_fallbacks_to_placeholder(self):
         with patch("src.presentation.renderers.owned_game.get_avatar_path", new=AsyncMock(return_value=None)), \
              patch("src.presentation.renderers.owned_game.get_avatar_frame_path", new=AsyncMock(return_value=None)), \

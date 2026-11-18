@@ -36,6 +36,8 @@ DEFAULT_COMPACT_PAGE_SIZE = 8
 DEFAULT_COMPACT_MAX_PAGES = 3
 DEFAULT_COMPACT_COVER_CONCURRENCY = 4
 BATCH_KIND = "owned_batch"
+REMOVED_KIND = "removed"
+REMOVED_BATCH_KIND = "removed_batch"
 
 
 def resolve_notify_style(style, added_count, threshold):
@@ -147,6 +149,16 @@ class OwnedGamesService:
     def _enabled(self) -> bool:
         return bool((self.plugin.config or {}).get("enable_owned_games_notify", False))
 
+    def _removed_enabled(self) -> bool:
+        return bool((self.plugin.config or {}).get("enable_owned_games_removed_notify", False))
+
+    def _removed_confirmations(self) -> int:
+        try:
+            value = int(self.plugin.config.get("owned_games_removed_confirmations", 2))
+        except (TypeError, ValueError):
+            value = 2
+        return min(10, max(1, value))
+
     def _interval(self) -> int:
         try:
             seconds = int(self.plugin.config.get("owned_games_poll_interval", DEFAULT_INTERVAL_SECONDS))
@@ -233,17 +245,23 @@ class OwnedGamesService:
     async def run_loop(self):
         """独立后台循环：60s 后首轮同步（新玩家静默建基线；已有基线者补播停机期间新增），随后按周期同步（默认 1800s）。"""
         logger.info(
-            f"[游戏库] 新入库播报服务启动：间隔 {self._interval()}s，"
-            f"播报开关 {'开启' if self._enabled() else '关闭'}，"
+            f"[游戏库] 游戏库播报服务启动：间隔 {self._interval()}s，"
+            f"新入库 {'开启' if self._enabled() else '关闭'}，"
+            f"移出 {'开启' if self._removed_enabled() else '关闭'}，"
             f"已加载 {len(self.store.players)} 位玩家快照，60 秒后执行首轮同步"
         )
         await asyncio.sleep(60)
         try:
             await self.sync_all()
+            await self.retry_pending()
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.exception("[游戏库] 首轮同步失败，将按周期重试")
+        finally:
+            if self._dirty:
+                self._flush_now()
+        await asyncio.sleep(self._interval())
         while True:
             try:
                 if time.time() < self._backoff_until:
@@ -305,7 +323,7 @@ class OwnedGamesService:
             self._dirty = True
             logger.info(f"[游戏库] 已清理 {len(stale)} 个不在监控名单中的玩家快照")
         sids = [sid for sid in routing if self._sid_ready(sid)]
-        summary = {"players": len(sids), "added": 0, "baselines": 0, "failed": 0}
+        summary = {"players": len(sids), "added": 0, "removed": 0, "baselines": 0, "failed": 0}
         if not sids:
             logger.info("[游戏库] 本轮同步：当前没有处于监控中的玩家，跳过")
             return summary
@@ -322,15 +340,16 @@ class OwnedGamesService:
             if not isinstance(result, dict):
                 continue
             summary["added"] += int(result.get("added", 0))
+            summary["removed"] += int(result.get("removed", 0))
             summary["baselines"] += int(bool(result.get("baseline")))
             summary["failed"] += int(bool(result.get("failed")))
-        if summary["added"] or summary["failed"] or summary["baselines"]:
+        if summary["added"] or summary["removed"] or summary["failed"] or summary["baselines"]:
             logger.info(
                 f"[游戏库] 本轮同步：玩家 {summary['players']}，新入库 {summary['added']}，"
-                f"新建基线 {summary['baselines']}，失败 {summary['failed']}"
+                f"移出 {summary['removed']}，新建基线 {summary['baselines']}，失败 {summary['failed']}"
             )
         else:
-            logger.info(f"[游戏库] 本轮同步完成：{summary['players']} 位玩家，无新增播报")
+            logger.info(f"[游戏库] 本轮同步完成：{summary['players']} 位玩家，无游戏库播报")
         return summary
 
     async def sync_player(self, sid, groups, baseline_only=False):
@@ -389,16 +408,35 @@ class OwnedGamesService:
             grace[str(appid)] = now
         self._prune_grace(grace, now, grace_seconds)
 
+        missing = state.setdefault("missing", {})
+        confirmed_removed = []
+        if baseline_only or not self._removed_enabled():
+            missing.clear()
+        else:
+            for key in list(missing):
+                if int(key) in current:
+                    del missing[key]
+                else:
+                    missing[key] += 1
+            for appid in removed_ids:
+                missing[str(appid)] = 1
+            for key, count in list(missing.items()):
+                if count >= self._removed_confirmations():
+                    confirmed_removed.append(int(key))
+                    del missing[key]
+            confirmed_removed = self._filter_new_appids(sorted(confirmed_removed), {}, now, 0)
+
         state["ids"] = current_ids
         self._dirty = True
         if effective:
             self._record_recent(state, effective, now)
         if removed_ids:
-            logger.info(f"[游戏库] {sid} 检出 {len(removed_ids)} 款移出游戏库（退款/移除等，不播报）")
-        if baseline_only or not effective:
-            return {"baseline": False, "added": 0, "failed": False}
-        announced = await self._announce(sid, groups, effective, state)
-        return {"baseline": False, "added": announced, "failed": False}
+            logger.info(f"[游戏库] {sid} 检出 {len(removed_ids)} 款不在当前游戏库中")
+        if baseline_only:
+            return {"baseline": False, "added": 0, "removed": 0, "failed": False}
+        added = await self._announce(sid, groups, effective, state) if effective else 0
+        removed = await self._announce(sid, groups, confirmed_removed, state, removed=True) if confirmed_removed else 0
+        return {"baseline": False, "added": added, "removed": removed, "failed": False}
 
     def _filter_new_appids(self, added_ids, grace, now, grace_seconds):
         """过滤抖动重现与黑白名单/忽略名单，返回真正需要播报的新增。"""
@@ -431,13 +469,13 @@ class OwnedGamesService:
 
     # ================= 播报与补发 =================
 
-    async def _announce(self, sid, groups, appids, state):
-        """把新增项转为播报任务：懒加载名称与商店数据，立即投递，失败进持久化补发队列。"""
-        if not self._enabled():
-            logger.info(f"[游戏库] {sid} 检出 {len(appids)} 款新增，但播报开关已关闭，仅更新本地快照")
+    async def _announce(self, sid, groups, appids, state, *, removed=False):
+        """把游戏库变化转为播报任务，失败进持久化补发队列。"""
+        if not (self._removed_enabled() if removed else self._enabled()):
+            logger.info(f"[游戏库] {sid} 播报开关已关闭，仅更新本地快照")
             return 0
         if self._effective_style(len(appids)) == "compact":
-            return await self._announce_compact(sid, groups, appids, state)
+            return await self._announce_compact(sid, groups, appids, state, removed=removed)
         max_cards = self._max_per_notify()
         now = int(time.time())
         items = []
@@ -452,7 +490,7 @@ class OwnedGamesService:
                     logger.warning(f"[游戏库] 获取游戏名失败（appid={appid}）: {exc}")
                     name = None
             name = str(name or f"AppID {appid}")
-            logger.info(f"[游戏库] {sid} 检出新增：{name}（appid={appid}）")
+            logger.info(f"[游戏库] {sid} 检出{'移出' if removed else '新增'}：{name}（appid={appid}）")
             items.append({
                 "appid": str(appid),
                 "name": name,
@@ -463,9 +501,12 @@ class OwnedGamesService:
                 "deliveries": [],
                 "card_data": card_data if isinstance(card_data, dict) else None,
             })
-            for entry in state.get("recent") or []:
-                if entry.get("appid") == str(appid):
-                    entry["name"] = name
+            if removed:
+                items[-1]["kind"] = REMOVED_KIND
+            else:
+                for entry in state.get("recent") or []:
+                    if entry.get("appid") == str(appid):
+                        entry["name"] = name
         state.setdefault("pending", []).extend(items)
         self._dirty = True
         for item in items:
@@ -481,8 +522,8 @@ class OwnedGamesService:
         ]
         return len(items)
 
-    async def _announce_compact(self, sid, groups, appids, state):
-        """简洁模式：本轮新增按页合并成清单图，逐页投递。
+    async def _announce_compact(self, sid, groups, appids, state, *, removed=False):
+        """简洁模式：本轮变化按页合并成清单图，逐页投递。
 
         与详细模式的关键差异：**不调用 _enrich_card**，因此不会为每款游戏
         请求商店详情与双语言评价；只取游戏名（走既有名称缓存），封面在渲染
@@ -498,10 +539,11 @@ class OwnedGamesService:
                 logger.warning(f"[游戏库] 获取游戏名失败（appid={appid}）: {exc}")
             name = str(name or f"AppID {appid}")
             entries.append({"appid": str(appid), "name": name})
-            logger.info(f"[游戏库] {sid} 检出新增：{name}（appid={appid}）")
-            for entry in state.get("recent") or []:
-                if entry.get("appid") == str(appid):
-                    entry["name"] = name
+            logger.info(f"[游戏库] {sid} 检出{'移出' if removed else '新增'}：{name}（appid={appid}）")
+            if not removed:
+                for entry in state.get("recent") or []:
+                    if entry.get("appid") == str(appid):
+                        entry["name"] = name
 
         chunks = paginate_compact_entries(
             entries, self._compact_page_size(), self._compact_max_pages()
@@ -515,7 +557,7 @@ class OwnedGamesService:
         items = []
         for page, chunk in enumerate(chunks, start=1):
             items.append({
-                "kind": BATCH_KIND,
+                "kind": REMOVED_BATCH_KIND if removed else BATCH_KIND,
                 "added_at": now,
                 "tries": 0,
                 "render": True,
@@ -544,7 +586,7 @@ class OwnedGamesService:
             if item.get("groups") or item.get("deliveries")
         ]
         logger.info(
-            f"[游戏库] {sid} 简洁模式播报：新增 {len(entries)} 款，共 {pages} 页"
+            f"[游戏库] {sid} 简洁模式播报：{'移出' if removed else '新增'} {len(entries)} 款，共 {pages} 页"
         )
         return len(entries)
 
@@ -575,9 +617,9 @@ class OwnedGamesService:
             "owned_count": owned_count,
             "render": bool(item.get("render", True)),
         }
-        if item.get("kind") == BATCH_KIND:
+        if item.get("kind") in (BATCH_KIND, REMOVED_BATCH_KIND):
             noti.update({
-                "type": BATCH_KIND,
+                "type": item["kind"],
                 "page": max(1, int(item.get("page") or 1)),
                 "pages": max(1, int(item.get("pages") or 1)),
                 "added_count": max(0, int(item.get("added_count") or 0)),
@@ -591,7 +633,7 @@ class OwnedGamesService:
             })
             return noti
         noti.update({
-            "type": "owned",
+            "type": REMOVED_KIND if item.get("kind") == REMOVED_KIND else "owned",
             "gameid": str(item.get("appid")),
             "game": item.get("name") or f"AppID {item.get('appid')}",
             "status": status,
@@ -606,7 +648,7 @@ class OwnedGamesService:
             return
         plugin = self.plugin
         owned_count = len(state.get("ids") or [])
-        is_batch = item.get("kind") == BATCH_KIND
+        is_batch = item.get("kind") in (BATCH_KIND, REMOVED_BATCH_KIND)
         label = (
             f"第 {item.get('page')}/{item.get('pages')} 页"
             if is_batch else (item.get("name") or f"AppID {item.get('appid')}")
@@ -640,7 +682,7 @@ class OwnedGamesService:
 
     async def retry_pending(self):
         """补发上一轮失败/未完成的播报（持久化队列，重启后照常补发）。"""
-        if not self._enabled():
+        if not self._enabled() and not self._removed_enabled():
             return 0
         delivered = 0
         for sid, state in list(self.store.players.items()):
@@ -651,6 +693,10 @@ class OwnedGamesService:
             async with lock:
                 remaining = []
                 for item in pending:
+                    is_removed = item.get("kind") in (REMOVED_KIND, REMOVED_BATCH_KIND)
+                    if not (self._removed_enabled() if is_removed else self._enabled()):
+                        remaining.append(item)
+                        continue
                     try:
                         still_pending = await self._retry_item(sid, state, item)
                     except asyncio.CancelledError:
@@ -664,7 +710,7 @@ class OwnedGamesService:
                     item["tries"] = int(item.get("tries") or 0) + 1
                     if item["tries"] > PENDING_MAX_TRIES:
                         logger.warning(
-                            f"[游戏库] {sid} 的新入库播报（appid={item.get('appid')}）"
+                            f"[游戏库] {sid} 的游戏库播报（appid={item.get('appid')}）"
                             f"连续失败 {item['tries']} 次，放弃补发"
                         )
                         continue
@@ -672,7 +718,7 @@ class OwnedGamesService:
                 state["pending"] = remaining
                 self._dirty = True
         if delivered:
-            logger.info(f"[游戏库] 已补发 {delivered} 条未送达的新入库播报")
+            logger.info(f"[游戏库] 已补发 {delivered} 条未送达的游戏库播报")
         return delivered
 
     async def _retry_item(self, sid, state, item):
@@ -699,7 +745,7 @@ class OwnedGamesService:
         sids = list(dict.fromkeys(
             str(sid) for sid in (getattr(self.plugin, "group_steam_ids", {}).get(gid) or [])
         ))
-        result = {"players": len(sids), "baselines": 0, "added": 0, "failed": 0}
+        result = {"players": len(sids), "baselines": 0, "added": 0, "removed": 0, "failed": 0}
         for sid in sids:
             try:
                 outcome = await self.sync_player(sid, [gid], baseline_only=not announce)
@@ -714,11 +760,12 @@ class OwnedGamesService:
                 continue
             result["baselines"] += int(bool(outcome.get("baseline")))
             result["added"] += int(outcome.get("added", 0))
+            result["removed"] += int(outcome.get("removed", 0))
         self.store.flush()
         self._dirty = False
         logger.info(
             f"[游戏库] 手动同步（群 {gid}）：玩家 {result['players']}，新入库 {result['added']}，"
-            f"新建基线 {result['baselines']}，失败 {result['failed']}"
+            f"移出 {result['removed']}，新建基线 {result['baselines']}，失败 {result['failed']}"
         )
         return result
 

@@ -65,7 +65,8 @@ class OwnedGamesStore:
                 continue
             # 按 kind 分派：老数据没有 kind 字段 → 视为 "owned"，走原逻辑且不补写 kind，
             # 保证升级后落盘字节与升级前一致；"owned_batch" 是简洁合并播报的分页批。
-            if str(item.get("kind") or "owned").strip() == "owned_batch":
+            kind = str(item.get("kind") or "owned").strip()
+            if kind in ("owned_batch", "removed_batch"):
                 entry = OwnedGamesStore._normalize_batch_entry(item)
                 if entry is not None:
                     pending.append(entry)
@@ -84,6 +85,8 @@ class OwnedGamesStore:
                 }
             except (TypeError, ValueError):
                 continue
+            if kind == "removed":
+                entry["kind"] = kind
             for delivery in item.get("deliveries") or []:
                 if isinstance(delivery, dict) and isinstance(delivery.get("noti"), dict):
                     entry["deliveries"].append({
@@ -118,6 +121,15 @@ class OwnedGamesStore:
             except (TypeError, ValueError):
                 continue
         recent = recent[-20:]
+        missing = {}
+        raw_missing = state.get("missing") or {}
+        if isinstance(raw_missing, dict):
+            for appid, count in raw_missing.items():
+                try:
+                    if str(appid).isdigit() and int(count) > 0:
+                        missing[str(appid)] = int(count)
+                except (TypeError, ValueError):
+                    continue
         return {
             "ids": ids,
             "baseline_at": baseline_at,
@@ -126,6 +138,7 @@ class OwnedGamesStore:
             "grace": grace,
             "pending": pending,
             "recent": recent,
+            "missing": missing,
         }
 
     @staticmethod
@@ -147,7 +160,7 @@ class OwnedGamesStore:
             return None
         try:
             entry = {
-                "kind": "owned_batch",
+                "kind": item.get("kind"),
                 "added_at": int(item.get("added_at") or 0),
                 "tries": int(item.get("tries") or 0),
                 "render": bool(item.get("render", True)),
@@ -181,6 +194,7 @@ class OwnedGamesStore:
             "grace": {},
             "pending": [],
             "recent": [],
+            "missing": {},
         }
 
     # ---------- 保存 ----------

@@ -201,7 +201,7 @@ async def blacklist(plugin, event, action: str = "", value: str = ""):
 
 
 async def syncgames(plugin, event, param: str = ""):
-    '''手动同步本群玩家游戏库；默认只更新基线不播报，now=立即播报本轮新增'''
+    '''手动同步本群玩家游戏库；默认只更新基线不播报，now=播报本轮已确认的变化'''
     group_id = group_id_of(event)
     if not is_valid_group_id(group_id):
         yield event.plain_result("请在需要同步游戏库的群聊中使用 /steam syncgames。")
@@ -217,10 +217,10 @@ async def syncgames(plugin, event, param: str = ""):
         return
     announce = str(param or "").strip().lower() == "now"
     result = await plugin.owned_games.sync_group_with_report(group_id, announce=announce)
-    mode = "（含播报新增）" if announce else "（仅更新基线）"
+    mode = "（含播报游戏库变化）" if announce else "（仅更新基线）"
     yield event.plain_result(
         f"本群游戏库同步完成{mode}：{result['players']} 位玩家，"
-        f"新建基线 {result['baselines']}，新增 {result['added']}，失败 {result['failed']}。"
+        f"新建基线 {result['baselines']}，新增 {result['added']}，移出 {result['removed']}，失败 {result['failed']}。"
     )
 
 

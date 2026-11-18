@@ -311,6 +311,18 @@
     "hint": "开启后检测到被监控玩家游戏库新增游戏时推送卡片；首次同步只建立基线不播报；也可用 /steam set enable_owned_games_notify true 即时切换",
     "default": false
   },
+  "enable_owned_games_removed_notify": {
+    "description": "游戏库移出播报开关",
+    "type": "bool",
+    "hint": "开启后播报从游戏库中消失的游戏，与新入库播报独立；首次同步仅建立基线。移出原因无法由游戏库接口确定。",
+    "default": false
+  },
+  "owned_games_removed_confirmations": {
+    "description": "移出播报确认次数",
+    "type": "int",
+    "hint": "游戏连续多少次成功同步未出现才播报移出（1-10，默认 2）；查询失败不计数，重新出现则取消。",
+    "default": 2
+  },
   "owned_games_poll_interval": {
     "description": "游戏库轮询间隔（秒）-修改后重启AstrBot生效",
     "type": "int",
@@ -326,7 +338,7 @@
   "owned_games_max_per_notify": {
     "description": "单轮最多渲染卡片数",
     "type": "int",
-    "hint": "单轮每位玩家最多渲染几张新入库卡片（1-20），超出的新增只发文本；默认 5",
+    "hint": "单轮每位玩家的新入库或移出播报各最多渲染几张卡片（1-20），超出的条目只发文本；默认 5",
     "default": 5
   },
   "owned_games_daily_budget": {
@@ -338,7 +350,7 @@
   "owned_games_ignore_appids": {
     "description": "游戏库忽略的AppID",
     "type": "string",
-    "hint": "逗号分隔 appid，这些游戏入库时不播报（如工具/测试软件），默认空",
+    "hint": "逗号分隔 appid，这些游戏入库或移出时不播报（如工具/测试软件），默认空",
     "default": ""
   },
   "owned_games_grace_days": {
@@ -348,16 +360,16 @@
     "default": 7
   },
   "owned_games_notify_style": {
-    "description": "游戏库新入库播报样式",
+    "description": "游戏库入库和移出播报样式",
     "type": "string",
-    "hint": "auto=按本轮新增数量自动选择（默认，达到下方阈值用合并图，否则逐款富卡）；detailed=始终逐款富卡（每款需请求商店详情与评价，API 消耗较高）；compact=始终合并为清单图（仅游戏名+封面缩略图，按每页条数分页）。也可用 /steam set owned_games_notify_style compact 即时切换",
+    "hint": "入库和移出共用：auto=按各类变化数量自动选择；detailed=逐款富卡（需请求商店详情与评价）；compact=合并清单图。也可用 /steam set owned_games_notify_style compact 即时切换",
     "default": "auto",
     "enum": ["auto", "detailed", "compact"]
   },
   "owned_games_auto_compact_threshold": {
     "description": "自动切换合并图的款数阈值",
     "type": "int",
-    "hint": "样式为 auto 时生效：本轮新增达到或超过这个款数就用合并清单图，少于它则逐款发富卡（1-20）。默认 3，即一次入库 3 款及以上自动合并成一张图",
+    "hint": "样式为 auto 时生效：本轮入库或移出数量各自达到此阈值就用合并图，否则逐款发富卡（1-20），默认 3",
     "default": 3
   },
   "owned_games_compact_page_size": {
@@ -369,7 +381,7 @@
   "owned_games_compact_max_pages": {
     "description": "简洁模式单轮最多页数",
     "type": "int",
-    "hint": "compact 样式下单轮最多推送几张分页图（1-10），超出部分本轮不播报但仍记入最近入库；用于防止一次入库上百款时刷屏，默认 3",
+    "hint": "compact 样式下入库和移出各自单轮最多推送几张分页图（1-10），超出部分本轮不播报；用于防止刷屏，默认 3",
     "default": 3
   },
   "owned_games_compact_cover_concurrency": {

@@ -44,6 +44,7 @@ PLUGIN_NAME = "steam_status_monitor_V3"
 
 # WebUI 保存时做范围校验的整数配置：key -> (最小值, 最大值)
 WEB_INT_RANGES = {
+    "owned_games_removed_confirmations": (1, 10),
     "owned_games_auto_compact_threshold": (1, 20),
     "owned_games_compact_page_size": (1, 20),
     "owned_games_compact_max_pages": (1, 10),
@@ -1039,6 +1040,8 @@ class WebAdminAPI:
     async def _api_settings_get(self, request):
         p = self.plugin
         config = dict(p.config)
+        config.setdefault("enable_owned_games_removed_notify", False)
+        config.setdefault("owned_games_removed_confirmations", 2)
         for key in ("steam_api_key", "sgdb_api_key"):
             if config.get(key):
                 config[key] = "******" + config[key][-4:] if len(config[key]) > 4 else "******"
