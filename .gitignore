@@ -16,3 +16,4 @@ test_line.txt
 assets/fonts/*.otf
 assets/fonts/*.ttf
 assets/fonts/*.ttc
+/.vs
