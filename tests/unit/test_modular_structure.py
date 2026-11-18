@@ -25,7 +25,11 @@ class ModularStructureTests(unittest.TestCase):
                 terminate = node
                 continue
             extra.append(node)
-        self.assertEqual([], [type(node).__name__ for node in extra])
+        self.assertEqual(
+            {"steam_owned_games", "steam_monitor_query", "steam_monitor_add", "steam_monitor_remove"},
+            {node.name for node in extra if isinstance(node, ast.AsyncFunctionDef)},
+        )
+        self.assertTrue(all(isinstance(node, ast.AsyncFunctionDef) for node in extra))
         self.assertIsNotNone(
             terminate,
             "Main.terminate must live on the entry class; AstrBot only calls "
@@ -82,6 +86,25 @@ class ModularStructureTests(unittest.TestCase):
             ),
             "terminate must await cancelled tasks; cancel() alone leaves the old loop running.",
         )
+
+    def test_llm_tools_registered_in_entry_module(self):
+        tree = ast.parse((PROJECT_ROOT / "main.py").read_text(encoding="utf-8"))
+        registrations = set()
+        for node in tree.body:
+            if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Call):
+                continue
+            outer = node.value.func
+            if not isinstance(outer, ast.Call) or not isinstance(outer.func, ast.Attribute):
+                continue
+            if outer.func.attr != "llm_tool":
+                continue
+            registrations.update(
+                keyword.value.value for keyword in outer.keywords
+                if keyword.arg == "name" and isinstance(keyword.value, ast.Constant)
+            )
+        self.assertEqual(registrations, {
+            "steam_owned_games", "steam_monitor_query", "steam_monitor_add", "steam_monitor_remove",
+        })
 
     def test_layered_modules_and_assets_exist(self):
         expected_paths = (

@@ -16,6 +16,7 @@ from ..application.services.achievement_monitor import AchievementMonitor
 from ..application.services.achievement_tracking import AchievementTrackingMixin
 from ..application.services.notification_tracking import NotificationTrackingMixin
 from ..application.services.owned_games import OwnedGamesService
+from ..application.services.llm_monitor import confirm_removal
 from ..application.services.session_quit import SessionQuitMixin
 from ..application.services.status_change_tracking import StatusChangeTrackingMixin
 from ..application.services.polling_tracking import PollingTrackingMixin
@@ -483,6 +484,12 @@ class SteamStatusMonitorV3(
         '''手动同步本群玩家游戏库（默认仅更新基线；syncgames now 播报新增和已确认移出）'''
         async for result in ops.syncgames(self, event, param):
             yield result
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("steam confirm_remove")
+    async def steam_confirm_remove(self, event: AstrMessageEvent, token: str):
+        """确认当前管理员在本群发起的 LLM 移除请求。"""
+        yield event.plain_result(confirm_removal(self, event, token))
 
     @filter.permission_type(filter.PermissionType.MEMBER)
     @filter.command("steam mygames")
